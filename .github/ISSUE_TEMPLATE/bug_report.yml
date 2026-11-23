@@ -1,0 +1,51 @@
+name: Bug report
+description: Something isn't working right
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping make Comunimate better! The more detail, the faster it gets fixed.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: part
+    attributes:
+      label: Which part?
+      options:
+        - Keyboard (rings / typing)
+        - Swipe typing
+        - Voice (talking into chat)
+        - Sending messages / channels
+        - Mascot / badge
+        - Settings window
+        - Installer / tray app
+        - Something else
+    validations:
+      required: true
+  - type: dropdown
+    id: controller
+    attributes:
+      label: Controller
+      options:
+        - PlayStation 5 (DualSense)
+        - PlayStation 4
+        - Xbox
+        - Steam Controller / Steam Deck
+        - Keyboard and mouse
+        - Other
+  - type: input
+    id: version
+    attributes:
+      label: Comunimate version
+      description: Shown at the bottom of the settings sidebar (for example v0.12.1).
+  - type: textarea
+    id: log
+    attributes:
+      label: Voice helper log (for voice or installer problems)
+      description: Paste the last lines of %LOCALAPPDATA%\Comunimate\voice.log (right-click the orc in the tray → Open log).
+      render: text

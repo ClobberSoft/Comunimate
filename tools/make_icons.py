@@ -252,6 +252,15 @@ def main() -> None:
     d = ImageDraw.Draw(ring)
     d.ellipse((14, 14, S - 14, S - 14), fill=(255, 255, 255, 40), outline=(255, 255, 255, 255), width=22)
     write_tga(ring.resize((64, 64), Image.LANCZOS), media / "ring.tga")
+    # Soft glow for the swipe light trail: bright down the middle, fading to
+    # nothing at the edges (WoW stretches it along each trail segment).
+    import math
+    glow = Image.new("RGBA", (64, 32), (255, 255, 255, 0))
+    for y in range(32):
+        a = int(255 * math.exp(-((y - 15.5) / 6.5) ** 2))
+        for x in range(64):
+            glow.putpixel((x, y), (255, 255, 255, a))
+    write_tga(glow, media / "trail_glow.tga")
     print("wrote orc and ring textures")
 
     # Gold frame drawn over the mascot in game (Settings > Badge > Gold frame).

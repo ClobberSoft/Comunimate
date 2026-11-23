@@ -32,6 +32,8 @@ ns.defaults = {
 	cursorMode = "spring",       -- "spring": steer a ring, it returns to the middle on release;
 	                             -- "free": the ring stays put; "snap": stick points at a key
 	cursorSpeed = 520,           -- ring speed at full push, pixels per second
+	swipeTrail = "light",        -- swipe trail: light | dots | off
+	swipeTrailColor = "gold",    -- gold | fel | frost | arcane | fire | holy | blood | class
 	invertY = false,           -- flip stick up/down if rows feel upside down
 	colInner = 0.20,             -- stick X needed to move one column from center
 	colOuter = 0.60,             -- stick X needed to reach the outer column

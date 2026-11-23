@@ -27,6 +27,11 @@ the banner in art/header and Comunimate/Media/header.tga) is copyright (c) 2026
 ClobberSoft. You may use it as part of Comunimate and in forks of it, but not
 on its own in other products.
 
+The English word list (Comunimate/Words.lua) is generated from word frequency
+data by the wordfreq project (https://github.com/rspeer/wordfreq) by Robyn
+Speer, licensed CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/).
+Words.lua is shared under the same license.
+
 Comunimate is a fan project. It is not made, endorsed or supported by
 Blizzard Entertainment. World of Warcraft and Warcraft are trademarks of
 Blizzard Entertainment, Inc.

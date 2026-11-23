@@ -20,7 +20,27 @@ local CHANNELS = {
 	{ label = "Yell",     chatType = "YELL",          color = "ff4040" },
 	{ label = "General",  chatType = "CHANNEL", channel = "General", default = 1, color = "ffc0c0" },
 	{ label = "Trade",    chatType = "CHANNEL", channel = "Trade",   default = 2, color = "ffc0c0" },
+	{ label = "Reply",    chatType = "WHISPER", reply = true,        color = "ff80ff" },
 }
+
+-- Who whispered you last (for Reply and /r). Our own record, so we never
+-- need to read Blizzard's chat box state.
+local whispers = CreateFrame("Frame")
+whispers:RegisterEvent("CHAT_MSG_WHISPER")
+whispers:SetScript("OnEvent", function(_, _, _, sender)
+	-- During chat lockdown WoW can hide names from add-ons ("secret" values).
+	if issecretvalue and issecretvalue(sender) then return end
+	if type(sender) == "string" and sender ~= "" then
+		local ok = pcall(function() Chat.lastTell = sender:gsub("%-" .. (GetNormalizedRealmName() or "") .. "$", "") end)
+		if not ok then Chat.lastTell = sender end
+	end
+end)
+
+function Chat:ReplyTarget()
+	if self.lastTell then return self.lastTell end
+	local t = ChatEdit_GetLastTellTarget and ChatEdit_GetLastTellTarget()
+	if t and t ~= "" then return t end
+end
 
 -- The number of a joined chat channel ("General - Elwynn Forest" -> 1).
 function Chat:ChannelNumber(name, default)
@@ -65,6 +85,8 @@ function Chat:ChannelAt(index)
 	local ch = CHANNELS[index] or CHANNELS[1]
 	if ch.chatType == "CHANNEL" then
 		return "CHANNEL", self:ChannelNumber(ch.channel, ch.default)
+	elseif ch.reply then
+		return "WHISPER", self:ReplyTarget() or false
 	end
 	return ch.chatType
 end
@@ -79,6 +101,10 @@ end
 
 function Chat:ChannelLabel(index)
 	local ch = CHANNELS[index] or CHANNELS[1]
+	if ch.reply then
+		local who = self:ReplyTarget()
+		return "|cff" .. ch.color .. "Reply" .. (who and (": " .. who) or " (nobody yet)") .. "|r"
+	end
 	if ch.chatType then
 		return "|cff" .. ch.color .. ch.label .. "|r"
 	end
@@ -90,6 +116,7 @@ end
 function Chat:Parse(text, chatType, target)
 	local cmd, rest = text:match("^/(%S+)%s*(.*)$")
 	if not cmd then
+		if chatType == "WHISPER" and not target then return nil, "Nobody has whispered you yet, so there's no one to reply to." end
 		if chatType then return text, chatType, target end
 		return text, self:AutoType()
 	end
@@ -105,8 +132,8 @@ function Chat:Parse(text, chatType, target)
 		if not name then return nil, "Whisper like this: /w Name message" end
 		return msg, "WHISPER", name
 	elseif REPLY[cmd] then
-		local target = ChatEdit_GetLastTellTarget and ChatEdit_GetLastTellTarget()
-		if not target or target == "" then return nil, "Nobody to reply to yet." end
+		local target = self:ReplyTarget()
+		if not target then return nil, "Nobody has whispered you yet, so there's no one to reply to." end
 		return rest, "WHISPER", target
 	elseif tonumber(cmd) then
 		return rest, "CHANNEL", tonumber(cmd)

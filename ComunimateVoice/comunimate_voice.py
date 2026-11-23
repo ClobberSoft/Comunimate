@@ -296,15 +296,17 @@ class Transcriber:
 CHANNEL_WORDS = {
     "say": "/s ", "party": "/p ", "raid": "/ra ", "raid warning": "/rw ", "guild": "/g ",
     "instance": "/i ", "yell": "/y ", "officer": "/o ",
-    "general": "/general ", "trade": "/trade ",
+    "general": "/general ", "trade": "/trade ", "reply": "/r ",
 }
 # "In party, ...", "Say in party chat, ...", "Send to the guild channel: ...", "Say in say chat ..."
 CHANNEL_RE = re.compile(
     r"^\s*(?:(?:say|send|post|speak|talk|type|yell)\s*,?\s+)?"
     r"(?:in|into|to|on)\s*(?:the\s+)?"
-    r"(raid warning|say|party|raid|guild|instance|yell|officer|general|trade)"
+    r"(raid warning|say|party|raid|guild|instance|yell|officer|general|trade|reply)"
     r"(?:\s+(?:chat|channel))?\b[\s,.:;!-]*",
     re.IGNORECASE)
+# "Reply, on my way" / "Reply: ..." -> whisper back to whoever whispered you last.
+REPLY_RE = re.compile(r"^\s*reply\b[\s,.:;!-]*", re.IGNORECASE)
 WHISPER_RE = re.compile(r"^\s*(?:whisper|tell|message)\s+(?:to\s+)?([A-Za-zÀ-ɏ]+)\b[\s,.:;!-]*",
                         re.IGNORECASE)
 
@@ -318,6 +320,9 @@ def apply_channel_phrase(text: str) -> str:
     m = CHANNEL_RE.match(text)
     if m:
         return CHANNEL_WORDS[m.group(1).lower()] + rest_of(m)
+    m = REPLY_RE.match(text)
+    if m:
+        return "/r " + rest_of(m)
     m = WHISPER_RE.match(text)
     if m:
         name = m.group(1).capitalize()

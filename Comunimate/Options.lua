@@ -497,9 +497,14 @@ local PAGES = {
 		intro = "How the sticks pick keys.",
 		rows = {
 			{ kind = "choice", key = "cursorMode", label = "Stick style",
-				desc = "Spring: steer the ring, it glides back to the middle when you let go. "
-					.. "Free: the ring stays put. Snap: the stick points straight at a key.",
-				choices = { { "spring", "Spring" }, { "free", "Free" }, { "snap", "Snap" } } },
+				desc = "Spring, Free, Snap: two rings, one per half. Swipe: one keyboard, hold L2/R2 and trace words.",
+				choices = { { "spring", "Spring" }, { "free", "Free" }, { "snap", "Snap" }, { "swipe", "Swipe" } } },
+			{ kind = "choice", key = "swipeTrail", label = "Swipe trail",
+				desc = "Follows the ring while you swipe: a fading light streak, little circles, or nothing.",
+				choices = { { "light", "Light" }, { "dots", "Dots" }, { "off", "Off" } } },
+			{ kind = "cycle", key = "swipeTrailColor", label = "Trail color",
+				desc = "Color of the swipe ring and trail.",
+				choices = function() return ns.Keyboard:TrailColorChoices() end },
 			{ kind = "slider", key = "cursorSpeed", label = "Ring speed",
 				desc = "How fast the ring moves when you push the stick all the way.",
 				min = 200, max = 1200, step = 20, fmt = "%d" },

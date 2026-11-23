@@ -211,6 +211,7 @@ function KB:Build()
 	}
 	self.halves.left.ring.tex:SetVertexColor(COLOR_LEFT[1], COLOR_LEFT[2], COLOR_LEFT[3], 0.95)
 	self.halves.right.ring.tex:SetVertexColor(COLOR_RIGHT[1], COLOR_RIGHT[2], COLOR_RIGHT[3], 0.95)
+	self:BuildSwipePanel()
 
 	-- Middle panel: big view of both selected keys, mode and voice status.
 	local mid = CreateFrame("Frame", nil, f)
@@ -330,6 +331,7 @@ function KB:SetCompact(on)
 		self.input:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, -PAD)
 		self.input:SetPoint("RIGHT", self.channelText, "LEFT", -10, 0)
 	end
+	self:UpdateLayoutMode()
 	self:RefreshStatus()
 	self:RefreshLegend()
 end
@@ -395,6 +397,8 @@ function KB:OnHidden()
 	self.repeatButton = nil
 	self.voiceState, self.voiceTimer, self.awaitApp = nil, nil, nil
 	self.status = nil
+	self.trace, self.lastSwipe = nil, nil
+	if self.swipePanel then self:ClearTrail() end
 end
 
 ----------------------------------------------------------------------
@@ -513,7 +517,11 @@ function KB:OnUpdate(elapsed)
 	local lx, ly, rx, ry, source = self:ReadSticks()
 	local sel = self.state.sel
 	local lr, lc, rr, rc
-	if ns.db.cursorMode == "snap" then
+	if ns.db.cursorMode == "swipe" and not self.compact then
+		-- Swipe style: one ring over the whole keyboard (see the swipe section).
+		self:UpdateSwipe(lx, ly, rx, ry, elapsed)
+		lr, lc, rr, rc = sel.left[1], sel.left[2], sel.right[1], sel.right[2]
+	elseif ns.db.cursorMode == "snap" then
 		-- Snap mode: the stick points at a key directly; the ring jumps there.
 		lr, lc = stickToCell(lx, ly)
 		rr, rc = stickToCell(rx, ry)
@@ -617,6 +625,17 @@ function KB:OnTextChanged()
 		self.lastText = text
 		-- Voice text arrived.
 		if self.voiceState == "thinking" then self:SetVoiceState(nil) end
+	end
+
+	-- Right after a swiped word, the bar keeps that swipe's other guesses.
+	local ls = self.lastSwipe
+	if ls then
+		if before:sub(-#ls.inserted) == ls.inserted then
+			self.state.suggestions, self.state.sugIndex = ls.words, ls.index
+			if self:IsShown() then self:RefreshSuggestions() end
+			return
+		end
+		self.lastSwipe = nil
 	end
 
 	local partial = before:match("[%w']+$") or ""
@@ -731,13 +750,23 @@ KB.actions = {
 	TYPE_RIGHT = function(self) self:TypeSide("right") end,
 	SPACE = function(self) self:Insert(" ") end,
 	BACKSPACE = function(self) self:Backspace() end,
-	ACCEPT = function(self) self:AcceptSuggestion() end,
+	ACCEPT = function(self)
+		if self:SwipeAltActive() then
+			-- Keep the swiped word; the bar goes back to next-word guesses.
+			self.lastSwipe = nil
+			self:OnTextChanged()
+			return
+		end
+		self:AcceptSuggestion()
+	end,
 	NEXT_SUGGESTION = function(self)
+		if self:SwipeAltActive() then self:CycleSwipeAlt(1) return end
 		local n = #self.state.suggestions
 		if n > 0 then self.state.sugIndex = self.state.sugIndex % n + 1 end
 		self:RefreshSuggestions()
 	end,
 	PREV_SUGGESTION = function(self)
+		if self:SwipeAltActive() then self:CycleSwipeAlt(-1) return end
 		local n = #self.state.suggestions
 		if n > 0 then self.state.sugIndex = (self.state.sugIndex - 2) % n + 1 end
 		self:RefreshSuggestions()
@@ -955,6 +984,7 @@ function KB:OnButton(button, down)
 		return
 	end
 	if not down then
+		if self.trace and self.trace.button == button then self:FinishTrace() end
 		if self.repeatButton == button then
 			self.repeatAction, self.repeatButton = nil, nil
 		end
@@ -971,6 +1001,11 @@ function KB:OnButton(button, down)
 			return
 		end
 		if COMPACT_IGNORED[action] then return end
+	end
+	-- Swipe style: hold L2 or R2 to trace a word (a quick press types one key).
+	if ns.db.cursorMode == "swipe" and not self.compact and (action == "TYPE_LEFT" or action == "TYPE_RIGHT") then
+		if not self.trace then self:StartTrace(button) end
+		return
 	end
 	if action == "SEND" then
 		if self:BeginSecureSend(button) then return end
@@ -1006,7 +1041,12 @@ function KB:RefreshKeys()
 
 	local mode = st.layer == "symbols" and "123" or (st.caps and "|cffffd100CAPS|r" or (st.shift and "|cffffd100Shift|r" or "abc"))
 	self.modeText:SetText(mode)
+	self.modeString = mode
 	self:RefreshSelection()
+	if self.swipePanel then
+		self:RefreshSwipeKeys()
+		self:RefreshStatus()
+	end
 end
 
 function KB:RefreshSelection()
@@ -1051,6 +1091,10 @@ function KB:RefreshStatus()
 		text = self.status
 	end
 	self.statusText:SetText(text)
+	-- Swipe layout: the same status (or the shift / caps / 123 mode) above the keys.
+	if self.swipeStatus then
+		self.swipeStatus:SetText(text ~= "" and text or (self.modeString or ""))
+	end
 
 	-- Voice-only box title.
 	if self.compact then
@@ -1094,11 +1138,18 @@ local LEGEND = {
 	{ { "SYMBOLS" }, { "CHANNEL" }, { "CLEAR" }, { "VOICE" }, { "SEND" }, { "CLOSE" } },
 }
 
+local LEGEND_SWIPE = {
+	{ { "TYPE_LEFT", "TYPE_RIGHT", "Hold: swipe  /  tap: one key" }, { "PREV_SUGGESTION", "NEXT_SUGGESTION", "Other word" },
+		{ "BACKSPACE" }, { "SHIFT" }, { "CAPSLOCK" } },
+	{ { "SYMBOLS" }, { "SPACE" }, { "CHANNEL" }, { "VOICE" }, { "SEND" }, { "CLOSE" } },
+}
+
 local LEGEND_ICON = 18
 
 function KB:RefreshLegend()
 	if not self.frame then return end
-	for line, items in ipairs(LEGEND) do
+	local legend = ns.db.cursorMode == "swipe" and LEGEND_SWIPE or LEGEND
+	for line, items in ipairs(legend) do
 		local parts = {}
 		for _, item in ipairs(items) do
 			if item[3] then
@@ -1119,9 +1170,462 @@ end
 function KB:RefreshAll()
 	if not self.frame then return end
 	self.debugText:SetShown(ns.db.debug)
+	self:UpdateLayoutMode()
+	self:ApplyTrailColor()
+	if ns.db.swipeTrail == "off" and self.swipePanel then self:ClearTrail() end
 	self:RefreshKeys()
 	self:RefreshLegend()
 	self:RefreshChannel()
 	self:RefreshStatus()
 	self:RefreshSuggestions()
+end
+
+----------------------------------------------------------------------
+-- Swipe typing (Settings > Sticks > Stick style: Swipe)
+--
+-- One QWERTY block and one ring; either stick moves it. Hold L2 or R2 and
+-- trace through a word's letters, let go, and the best guess is typed with a
+-- space. The other guesses sit in the bar: D-Left / D-Right swaps them in.
+-- A quick press without moving types the key under the ring. Word guessing
+-- lives in Swipe.lua.
+----------------------------------------------------------------------
+
+local U = KEY + GAP              -- one key, in pixels
+local SWIPE_W, SWIPE_H = 11.5 * U, 3 * U
+-- Punctuation at the end of the bottom row (tap them).
+local SWIPE_EXTRA = { { ch = ",", x = 9.0, y = 2.5 }, { ch = ".", x = 10.0, y = 2.5 }, { ch = "?", x = 11.0, y = 2.5 } }
+-- R1: numbers and symbols on the same keys (rows of 10, 9 and 7).
+local SWIPE_SYMBOLS = { "1234567890", "!@#$%&*()", "-/:;\"'_" }
+local TAP_DISTANCE = 0.35        -- traces shorter than this (in keys) are a tap
+local TRACE_STEP = 0.08          -- record a point every this many keys
+local DWELL_TIME = 0.14          -- resting this long on a key marks it
+local PREVIEW_EVERY = 0.06       -- seconds between live guesses
+local TRAIL_DOTS = 48
+local TRAIL_SEGS = 90            -- light trail pieces (about 1.5 s of path)
+local SEG_MIN = 0.2              -- light trail: a new piece every this many keys
+local RING_TEX = "Interface\\AddOns\\Comunimate\\Media\\ring"
+local GLOW_TEX = "Interface\\AddOns\\Comunimate\\Media\\trail_glow"
+local GOLD = { 1, 0.82, 0.25 }
+local sqrt = math.sqrt
+
+-- Trail colors (Settings > Sticks > Trail color). "class" = your class color.
+KB.TRAIL_COLORS = {
+	{ key = "gold",   name = "Gold",          rgb = { 1, 0.82, 0.25 } },
+	{ key = "fel",    name = "Fel green",     rgb = { 0.35, 1, 0.3 } },
+	{ key = "frost",  name = "Frost blue",    rgb = { 0.4, 0.8, 1 } },
+	{ key = "arcane", name = "Arcane purple", rgb = { 0.75, 0.45, 1 } },
+	{ key = "fire",   name = "Fire",          rgb = { 1, 0.45, 0.12 } },
+	{ key = "holy",   name = "Holy white",    rgb = { 1, 0.97, 0.85 } },
+	{ key = "blood",  name = "Blood red",     rgb = { 0.9, 0.1, 0.15 } },
+	{ key = "class",  name = "My class color" },
+}
+
+function KB:TrailRGB(key)
+	key = key or ns.db.swipeTrailColor
+	if key == "class" then
+		local _, class = UnitClass("player")
+		local c = class and ((C_ClassColor and C_ClassColor.GetClassColor(class)) or (RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]))
+		if c then return c.r, c.g, c.b end
+		key = "gold"
+	end
+	for _, c in ipairs(self.TRAIL_COLORS) do
+		if c.key == key then return c.rgb[1], c.rgb[2], c.rgb[3] end
+	end
+	return GOLD[1], GOLD[2], GOLD[3]
+end
+
+-- Color choices for the settings window, each name in its own color.
+function KB:TrailColorChoices()
+	local list = {}
+	for _, c in ipairs(self.TRAIL_COLORS) do
+		local r, g, b = self:TrailRGB(c.key)
+		local function byte(v) return math.floor(v * 255 + 0.5) end
+		list[#list + 1] = { c.key, ("|cff%02x%02x%02x%s|r"):format(byte(r), byte(g), byte(b), c.name) }
+	end
+	return list
+end
+
+-- Paint the ring and trail in the chosen color. The light trail's core is
+-- the same color lifted toward white, so it shines.
+function KB:ApplyTrailColor()
+	local p = self.swipePanel
+	if not p then return end
+	local r, g, b = self:TrailRGB()
+	p.ring:SetVertexColor(r, g, b, 0.95)
+	for _, d in ipairs(p.dots) do d:SetVertexColor(r, g, b) end
+	local cr, cg, cb = r + (1 - r) * 0.55, g + (1 - g) * 0.55, b + (1 - b) * 0.55
+	for _, s in ipairs(p.segs) do
+		s.glow:SetVertexColor(r, g, b, 0.6)
+		s.core:SetVertexColor(cr, cg, cb, 1)
+	end
+end
+
+function KB:BuildSwipePanel()
+	local f = self.frame
+	local p = CreateFrame("Frame", nil, f)
+	p:SetSize(SWIPE_W, SWIPE_H)
+	p:SetPoint("TOP", f, "TOP", 0, -GRID_TOP)
+	p:Hide()
+	self.swipePanel = p
+	p.keys = {}
+	local function addKey(id, x, y)
+		local k = makeKey(p, x * U - KEY / 2, y * U - KEY / 2)
+		k.id, k.cx, k.cy = id, x, y
+		p.keys[#p.keys + 1] = k
+		return k
+	end
+	for r, row in ipairs(ns.Swipe.ROWS) do
+		for i = 1, #row do
+			local ch = row:sub(i, i)
+			local pos = ns.Swipe.POS[ch]
+			local k = addKey(ch, pos.x, pos.y)
+			k.row, k.col = r, i
+		end
+	end
+	for _, e in ipairs(SWIPE_EXTRA) do addKey(e.ch, e.x, e.y) end
+
+	-- Ring, trail and the floating guess sit above the keys.
+	local top = CreateFrame("Frame", nil, p)
+	top:SetAllPoints()
+	top:SetFrameLevel(p:GetFrameLevel() + 20)
+	p.dots = {}
+	for i = 1, TRAIL_DOTS do
+		local d = top:CreateTexture(nil, "ARTWORK")
+		d:SetTexture(RING_TEX)
+		d:SetSize(12, 12)
+		d:SetVertexColor(GOLD[1], GOLD[2], GOLD[3])
+		d:Hide()
+		p.dots[i] = d
+	end
+	p.dotNext = 1
+	-- Light trail: each piece is a wide soft glow plus a bright core, added
+	-- together so the streak shines.
+	p.segs = {}
+	for i = 1, TRAIL_SEGS do
+		local glow = top:CreateLine(nil, "ARTWORK", nil, 1)
+		glow:SetTexture(GLOW_TEX)
+		glow:SetBlendMode("ADD")
+		glow:SetVertexColor(GOLD[1], GOLD[2] * 0.8, GOLD[3] * 0.6, 0.55)
+		glow:Hide()
+		local core = top:CreateLine(nil, "ARTWORK", nil, 2)
+		core:SetTexture(GLOW_TEX)
+		core:SetBlendMode("ADD")
+		core:SetVertexColor(1, 0.95, 0.75, 1)
+		core:Hide()
+		p.segs[i] = { glow = glow, core = core, age = 0 }
+	end
+	p.segNext = 1
+	local ring = top:CreateTexture(nil, "OVERLAY")
+	ring:SetTexture(RING_TEX)
+	ring:SetSize(KEY * 1.1, KEY * 1.1)
+	ring:SetVertexColor(GOLD[1], GOLD[2], GOLD[3], 0.95)
+	p.ring = ring
+
+	local guessBg = top:CreateTexture(nil, "OVERLAY", nil, 1)
+	guessBg:SetColorTexture(0, 0, 0, 0.75)
+	local guess = top:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	guess:SetDrawLayer("OVERLAY", 2)
+	guessBg:SetPoint("TOPLEFT", guess, "TOPLEFT", -6, 3)
+	guessBg:SetPoint("BOTTOMRIGHT", guess, "BOTTOMRIGHT", 6, -3)
+	guess:Hide()
+	guessBg:Hide()
+	p.guess, p.guessBg = guess, guessBg
+
+	local status = p:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	status:SetPoint("BOTTOM", p, "TOP", 0, 3)
+	self.swipeStatus = status
+
+	self.swipeCursor = { x = 5.0, y = 1.5 }
+	self:PlaceSwipeRing()
+	self:ApplyTrailColor()
+end
+
+-- Show the swipe block or the split halves, to match the stick style.
+function KB:UpdateLayoutMode()
+	if not self.swipePanel then return end
+	local swipe = ns.db.cursorMode == "swipe"
+	local full = not self.compact
+	self.halves.left:SetShown(full and not swipe)
+	self.halves.right:SetShown(full and not swipe)
+	self.mid:SetShown(full and not swipe)
+	self.swipePanel:SetShown(full and swipe)
+	if not swipe then self.trace = nil end
+end
+
+function KB:PlaceSwipeRing()
+	local p, c = self.swipePanel, self.swipeCursor
+	p.ring:ClearAllPoints()
+	p.ring:SetPoint("CENTER", p, "TOPLEFT", c.x * U, -c.y * U)
+	if p.guess:IsShown() then
+		p.guess:ClearAllPoints()
+		p.guess:SetPoint("BOTTOM", p, "TOPLEFT", c.x * U, -c.y * U + KEY * 0.7)
+	end
+end
+
+-- The key frame under a point (key units), or nil.
+function KB:SwipeKeyAt(x, y)
+	local best, bestD = nil, 0.72
+	for _, k in ipairs(self.swipePanel.keys) do
+		local dx, dy = x - k.cx, y - k.cy
+		local d = sqrt(dx * dx + dy * dy)
+		if d < bestD then best, bestD = k, d end
+	end
+	return best
+end
+
+-- What a key types right now (layer, shift, caps).
+function KB:SwipeChar(k)
+	local st = self.state
+	if st.layer == "symbols" and k.row then
+		return SWIPE_SYMBOLS[k.row]:sub(k.col, k.col)
+	end
+	if k.row and (st.shift or st.caps) then return k.id:upper() end
+	return k.id
+end
+
+function KB:RefreshSwipeKeys()
+	local p = self.swipePanel
+	if not p then return end
+	for _, k in ipairs(p.keys) do
+		k.text:SetText(self:SwipeChar(k))
+		paintKey(k, k == self.swipeHover and "left" or "rest")
+	end
+end
+
+function KB:ShowSwipePreview(word)
+	local p = self.swipePanel
+	if word then
+		p.guess:SetText(word)
+		p.guess:Show()
+		p.guessBg:Show()
+		self:PlaceSwipeRing()
+	else
+		p.guess:Hide()
+		p.guessBg:Hide()
+	end
+end
+
+-- Trail (Settings > Sticks > Swipe trail: light / dots / off)
+function KB:AddTrailPoint(x, y)
+	local style = ns.db.swipeTrail or "light"
+	if style == "dots" then
+		self:AddTrailDot(x, y)
+	elseif style == "light" then
+		local prev = self.trailPrev
+		if prev then
+			local dx, dy = x - prev.x, y - prev.y
+			if dx * dx + dy * dy < SEG_MIN * SEG_MIN then return end  -- wait for a longer piece
+			local p = self.swipePanel
+			local s = p.segs[p.segNext]
+			p.segNext = p.segNext % TRAIL_SEGS + 1
+			for _, line in ipairs({ s.glow, s.core }) do
+				line:SetStartPoint("TOPLEFT", p, prev.x * U, -prev.y * U)
+				line:SetEndPoint("TOPLEFT", p, x * U, -y * U)
+				line:SetAlpha(1)
+				line:Show()
+			end
+			s.glow:SetThickness(18)
+			s.core:SetThickness(6)
+			s.age = 0
+		end
+	end
+	self.trailPrev = { x = x, y = y }
+end
+
+function KB:AddTrailDot(x, y)
+	local p = self.swipePanel
+	local d = p.dots[p.dotNext]
+	p.dotNext = p.dotNext % TRAIL_DOTS + 1
+	d:ClearAllPoints()
+	d:SetPoint("CENTER", p, "TOPLEFT", x * U, -y * U)
+	d.age = 0
+	d:SetAlpha(1)
+	d:Show()
+end
+
+function KB:ClearTrail()
+	local p = self.swipePanel
+	for _, d in ipairs(p.dots) do d:Hide() end
+	for _, s in ipairs(p.segs) do
+		s.glow:Hide()
+		s.core:Hide()
+	end
+	self.trailPrev = nil
+end
+
+function KB:FadeTrail(elapsed)
+	local p = self.swipePanel
+	local life = self.trace and 1.6 or 0.35  -- fades fast once you let go
+	for _, d in ipairs(p.dots) do
+		if d:IsShown() then
+			d.age = (d.age or 0) + elapsed
+			local a = 1 - d.age / life
+			if a <= 0 then d:Hide() else d:SetAlpha(a) end
+		end
+	end
+	-- Light trail: a short bright streak that thins and fades behind the ring.
+	local lightLife = self.trace and 0.9 or 0.3
+	for _, s in ipairs(p.segs) do
+		if s.core:IsShown() then
+			s.age = s.age + elapsed
+			local a = 1 - s.age / lightLife
+			if a <= 0 then
+				s.glow:Hide()
+				s.core:Hide()
+			else
+				a = a * a
+				s.glow:SetAlpha(a)
+				s.core:SetAlpha(a)
+				s.glow:SetThickness(6 + 12 * a)
+				s.core:SetThickness(2 + 4 * a)
+			end
+		end
+	end
+end
+
+-- Every frame while the keyboard is open in swipe style.
+function KB:UpdateSwipe(lx, ly, rx, ry, elapsed)
+	-- Either stick: whichever is pushed further.
+	local x, y = lx, ly
+	if rx * rx + ry * ry > lx * lx + ly * ly then x, y = rx, ry end
+	if ns.db.invertY then y = -y end
+	local c = self.swipeCursor
+	local mag = sqrt(x * x + y * y)
+	local moving = mag > STICK_DEADZONE
+	if moving then
+		local push = math.min(1, (mag - STICK_DEADZONE) / (1 - STICK_DEADZONE))
+		local speed = (ns.db.cursorSpeed or 520) / U * push ^ 1.6  -- keys per second
+		c.x = math.min(SWIPE_W / U - 0.05, math.max(0.05, c.x + x / mag * speed * elapsed))
+		c.y = math.min(2.95, math.max(0.05, c.y - y / mag * speed * elapsed))
+		self:PlaceSwipeRing()
+	end
+
+	local hover = self:SwipeKeyAt(c.x, c.y)
+	if hover ~= self.swipeHover then
+		self.swipeHover = hover
+		self:RefreshSwipeKeys()
+	end
+
+	local t = self.trace
+	if t then
+		local last = t.points[#t.points]
+		local dx, dy = c.x - last.x, c.y - last.y
+		local d = sqrt(dx * dx + dy * dy)
+		if d >= TRACE_STEP then
+			t.points[#t.points + 1] = { x = c.x, y = c.y }
+			t.len = t.len + d
+			t.still = 0
+			self:AddTrailPoint(c.x, c.y)
+		elseif not moving then
+			t.still = t.still + elapsed
+			if t.still >= DWELL_TIME then last.dwell = true end
+		end
+		-- Live guess, when the ring reaches a new key.
+		t.sinceGuess = t.sinceGuess + elapsed
+		if self.state.layer == "letters" and t.len >= TAP_DISTANCE and t.sinceGuess >= PREVIEW_EVERY
+			and hover ~= t.guessKey then
+			t.sinceGuess, t.guessKey = 0, hover
+			local words = ns.Swipe:Decode(t.points, SUGGESTIONS)
+			self:ShowSwipePreview(words[1])
+			self.state.suggestions, self.state.sugIndex = words, 1
+			self:RefreshSuggestions()
+		end
+	end
+	self:FadeTrail(elapsed)
+end
+
+function KB:StartTrace(button)
+	local c = self.swipeCursor
+	self.trace = { button = button, points = { { x = c.x, y = c.y } }, len = 0, still = 0, sinceGuess = 0 }
+	self:ClearTrail()
+	self:AddTrailPoint(c.x, c.y)
+end
+
+function KB:FinishTrace()
+	local t = self.trace
+	self.trace = nil
+	self:ShowSwipePreview(nil)
+	if t.len < TAP_DISTANCE or self.state.layer ~= "letters" then
+		local k = self:SwipeKeyAt(self.swipeCursor.x, self.swipeCursor.y)
+		if k then self:TypeSwipeKey(k) end
+		return
+	end
+	local words = ns.Swipe:Decode(t.points, SUGGESTIONS)
+	if #words == 0 then
+		self:SetStatus("|cffff7f40No word matched that swipe. Try again, or tap the letters.|r", 3)
+		self:OnTextChanged()
+		return
+	end
+	self.lastSwipe = nil
+	self:InsertSwipeWord(words, 1)
+end
+
+-- Tap: one key. Punctuation tucks in against the word before it.
+function KB:TypeSwipeKey(k)
+	local ch = self:SwipeChar(k)
+	local eb = self.input
+	self.lastSwipe = nil
+	if ch == "." or ch == "," or ch == "?" or ch == "!" then
+		local before, after = splitAtCursor(eb)
+		if before:find(" $") then before = before:sub(1, -2) end
+		before = before .. ch .. " "
+		eb:SetText(before .. after)
+		eb:SetCursorPosition(#before)
+	else
+		self:Insert(ch)
+	end
+	paintKey(k, "flash")
+	C_Timer.After(0.08, function() KB:RefreshSwipeKeys() end)
+	if self.state.shift and k.row then
+		self.state.shift = false
+		self:RefreshKeys()
+	end
+end
+
+-- Type a swiped word (words[index]) with automatic spacing and capitals. If the
+-- last thing typed was a swiped word, it's replaced (swapping guesses).
+function KB:InsertSwipeWord(words, index)
+	local eb = self.input
+	local before, after = splitAtCursor(eb)
+	local ls = self.lastSwipe
+	local capFirst
+	if ls and before:sub(-#ls.inserted) == ls.inserted then
+		before = before:sub(1, #before - #ls.inserted)
+		capFirst = ls.capFirst
+	else
+		if before ~= "" and not before:find("%s$") then before = before .. " " end
+		local st = self.state
+		capFirst = st.shift or before:find("^%s*$") ~= nil or before:find("[%.%?!]%s*$") ~= nil
+		if st.shift then
+			st.shift = false
+			self:RefreshKeys()
+		end
+	end
+	local w = words[index]
+	if self.state.caps then
+		w = w:upper()
+	elseif capFirst then
+		w = w:sub(1, 1):upper() .. w:sub(2)
+	end
+	local inserted = w .. " "
+	-- Set before changing the text: OnTextChanged keeps these guesses in the bar.
+	self.lastSwipe = { words = words, index = index, inserted = inserted, capFirst = capFirst }
+	eb:SetText(before .. inserted .. after)
+	eb:SetCursorPosition(#before + #inserted)
+	self.state.suggestions, self.state.sugIndex = words, index
+	self:RefreshSuggestions()
+end
+
+-- Is the last swiped word still right before the cursor (so D-Left/Right swaps it)?
+function KB:SwipeAltActive()
+	local ls = self.lastSwipe
+	if not ls or #ls.words < 2 then return false end
+	local before = splitAtCursor(self.input)
+	return before:sub(-#ls.inserted) == ls.inserted
+end
+
+function KB:CycleSwipeAlt(dir)
+	local ls = self.lastSwipe
+	local i = (ls.index - 1 + dir) % #ls.words + 1
+	self:InsertSwipeWord(ls.words, i)
 end

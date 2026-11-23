@@ -29,7 +29,7 @@ import pystray
 from PIL import Image
 
 APP_NAME = "Comunimate"
-VERSION = "0.10.0"
+VERSION = "0.12.2"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 SCAN_SECONDS = 2.0
 # Tray icon: two looks only (whistling orc on green, yelling orc on red while

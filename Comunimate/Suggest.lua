@@ -11,6 +11,8 @@ local function hasUpper(w) return w:find("%u") ~= nil end
 
 function S:Add(word, score)
 	local key = word:lower()
+	-- "i", "i'm", "i've" -> "I", "I'm", "I've"
+	if key == "i" or key:find("^i'") then word = "I" .. key:sub(2) end
 	local e = self.entries[key]
 	if e then
 		if score > e.score then e.score = score end
@@ -20,6 +22,7 @@ function S:Add(word, score)
 	end
 	e = { word = word, key = key, score = score }
 	self.entries[key] = e
+	if ns.Swipe then ns.Swipe:Invalidate() end  -- new word: swipe index rebuilds on next use
 	local first = key:sub(1, 1)
 	local bucket = self.buckets[first]
 	if not bucket then
@@ -45,6 +48,7 @@ function S:Init()
 	addList(self, D.common, 3000, 4)
 	addList(self, D.wowChat, 2600, 3)
 	addList(self, D.wowNames, 1400, 1)
+	if D.english then addList(self, D.english, 2400, 0.22) end  -- Words.lua (10,000 words)
 	if ns.learned then
 		for key in pairs(ns.learned.words) do
 			if not self.entries[key] then self:Add(key, 0) end

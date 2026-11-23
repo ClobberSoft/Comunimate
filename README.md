@@ -3,8 +3,9 @@
 **Chat in World of Warcraft: Forever with just a controller, or just your voice.**
 
 - **Split on-screen keyboard.** Each stick steers a ring over its half of the keys; L2 / R2 type. WoW-aware word suggestions (LFM, OOM, Molten Core...) that learn how you talk.
+- **Swipe typing.** Hold L2, trace a word with the stick, let go. It guesses the word live as you trace (10,000-word dictionary plus WoW terms), adds spaces, capitals and apostrophes for you, and leaves a glowing trail in the color you pick.
 - **Talk instead of typing.** Hold the mic button (or any button or key you choose), speak, let go. Your words appear, ready to send. Speech recognition runs **on your PC**, nothing is sent online.
-- **Pick the channel by voice.** "Say in party chat, we need a tank" goes to party. Works for say, yell, party, raid, instance, guild, general and trade.
+- **Pick the channel by voice.** "Say in party chat, we need a tank" goes to party. Works for say, yell, party, raid, instance, guild, general and trade, and "Reply, on my way" whispers back to whoever whispered you last.
 - **A mascot that reacts.** Any race, Horde, Alliance or Skyborne, male or female, in Cute, Epic or Anime style. Calm while you're quiet, shouting while you talk.
 - **Full settings window** you can drive with the controller: remap every button, sizes, stick feel, voice options.
 
@@ -22,6 +23,8 @@ PlayStation, Xbox and Steam controllers are supported, with the right button ico
    - downloads the voice model once (about 500 MB)
 
 Then start WoW. If it's already running, type `/reload`.
+
+Only want the keyboard (no voice)? Download **`Comunimate-addon-<version>.zip`** instead and unzip the `Comunimate` folder into `World of Warcraft\_forever_\Interface\AddOns`. Full guide: [wiki → Installation](https://github.com/ClobberSoft/Comunimate/wiki/Installation).
 
 No admin rights needed. Uninstall from Windows Settings → Apps.
 
@@ -45,9 +48,19 @@ On the keyboard (PlayStation names, all remappable):
 | Triangle | Use the highlighted word suggestion |
 | D-Left / D-Right | Pick a suggestion |
 | L1 | Shift · D-Up: Caps lock · R1: numbers and symbols |
-| D-Down | Channel (Auto, Party, Raid, Instance, Guild, Say, Yell, General, Trade) |
+| D-Down | Channel (Auto, Party, Raid, Instance, Guild, Say, Yell, General, Trade, Reply) |
 | Options | Send |
 | Circle | Close |
+
+### Swipe typing
+
+Settings → Sticks → Stick style → **Swipe**. One keyboard, one ring (either stick moves it):
+
+- **Hold L2 or R2**, trace through the word's letters, **let go**. The best guess floats over the ring while you trace.
+- **D-Left / D-Right** swaps in the other guesses. A **quick press** without moving types one key (names, `gg`, `, . ?`).
+- Trail: Light, Dots or Off, in eight colors (or your class color).
+
+More in the [wiki](https://github.com/ClobberSoft/Comunimate/wiki/Swipe-Typing).
 
 ### Voice tips
 
@@ -84,6 +97,8 @@ powershell -ExecutionPolicy Bypass -File ComunimateVoice\build.ps1
 ```
 
 The version comes from `## Version:` in `Comunimate/Comunimate.toc`. Output: `release/Comunimate-Setup-<version>.exe`.
+
+**Word list and swipe:** `tools/make_words.py` rebuilds `Comunimate/Words.lua`. `tools/test_swipe.py` runs the add-on's swipe code against simulated stick traces and reports accuracy.
 
 **Art:** see [art/ART_GUIDE.md](art/ART_GUIDE.md). New mascot pictures go through `tools/mascot_art.py import <folder>`, and a new banner through `tools/make_header.py`.
 
