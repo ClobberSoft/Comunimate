@@ -1,0 +1,15 @@
+## Interface: 16001
+## Title: Comunimate
+## Notes: Split on-screen keyboard for controllers, with WoW-aware word suggestions and voice. Type in chat without a physical keyboard.
+## Version: 0.11.2
+## SavedVariables: ComunimateDB, ComunimateLearned
+
+Core.lua
+Controllers.lua
+Dictionary.lua
+Suggest.lua
+Chat.lua
+Keyboard.lua
+Mascot.lua
+Badge.lua
+Options.lua

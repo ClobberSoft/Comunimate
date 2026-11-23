@@ -1,0 +1,1127 @@
+-- The split on-screen keyboard.
+--
+-- Left stick picks a key on the left half, right stick picks a key on the right
+-- half. The stick works like a pointer: at rest it sits on the middle key, push
+-- it toward a key to select it. L2 types the left key, R2 types the right key.
+--
+-- The keyboard has its own text box and sends with the chat API (Chat.lua). It
+-- never touches Blizzard's chat box: driving that from an add-on "taints" it, and
+-- WoW then blocks chat with the "only available to the Blizzard UI" popup.
+
+local _, ns = ...
+local KB = {}
+ns.Keyboard = KB
+
+----------------------------------------------------------------------
+-- Layout
+----------------------------------------------------------------------
+
+local COLS, ROWS = 5, 3
+local KEY, GAP = 44, 4
+local HALF_W = COLS * KEY + (COLS - 1) * GAP
+local HALF_H = ROWS * KEY + (ROWS - 1) * GAP
+local PAD = 22  -- room for the gold dialog border
+local MID_W = 150
+local W = PAD + HALF_W + 12 + MID_W + 12 + HALF_W + PAD
+local INPUT_H, SUG_H, LEGEND_H = 28, 26, 46
+local GRID_TOP = PAD + INPUT_H + 6 + SUG_H + 22
+local H = GRID_TOP + HALF_H + 10 + LEGEND_H + PAD
+local SUGGESTIONS = 4
+
+local LAYERS = {
+	letters = {
+		left  = { { "q", "w", "e", "r", "t" }, { "a", "s", "d", "f", "g" }, { "z", "x", "c", "v", "b" } },
+		right = { { "y", "u", "i", "o", "p" }, { "h", "j", "k", "l", "'" }, { "n", "m", ",", ".", "?" } },
+	},
+	symbols = {
+		left  = { { "1", "2", "3", "4", "5" }, { "!", "@", "#", "$", "%" }, { "-", "+", "=", "(", ")" } },
+		right = { { "6", "7", "8", "9", "0" }, { "/", ":", ";", "\"", "&" }, { "*", "_", "<", ">", "~" } },
+	},
+}
+
+-- WoW look: dark stone keys with tooltip-style gold edges; the selected key on
+-- each half lights up in that half's color.
+local COLOR_KEY      = { 0.07, 0.06, 0.05, 0.95 }
+local COLOR_KEY_EDGE = { 0.55, 0.45, 0.25, 1 }
+local COLOR_LEFT     = { 0.20, 0.55, 1.00, 1 }
+local COLOR_RIGHT    = { 1.00, 0.55, 0.15, 1 }
+local COLOR_FLASH    = { 1, 1, 1, 1 }
+local KEY_BACKDROP = {
+	bgFile = "Interface\\Buttons\\WHITE8X8",
+	edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+	edgeSize = 12,
+	insets = { left = 3, right = 3, top = 3, bottom = 3 },
+}
+
+-- mode: "rest" | "left" | "right" | "flash"
+local function paintKey(k, mode)
+	if mode == "rest" then
+		k:SetBackdropColor(unpack(COLOR_KEY))
+		k:SetBackdropBorderColor(unpack(COLOR_KEY_EDGE))
+		k.text:SetTextColor(1, 0.82, 0)
+	elseif mode == "flash" then
+		k:SetBackdropColor(unpack(COLOR_FLASH))
+		k:SetBackdropBorderColor(unpack(COLOR_FLASH))
+		k.text:SetTextColor(0, 0, 0)
+	else
+		local c = mode == "left" and COLOR_LEFT or COLOR_RIGHT
+		k:SetBackdropColor(c[1] * 0.45, c[2] * 0.45, c[3] * 0.45, 1)
+		k:SetBackdropBorderColor(c[1], c[2], c[3], 1)
+		k.text:SetTextColor(1, 1, 1)
+	end
+end
+
+KB.state = {
+	layer = "letters",
+	shift = false,
+	caps = false,
+	sel = { left = { 2, 3 }, right = { 2, 3 } },
+	suggestions = {},
+	sugIndex = 1,
+}
+KB.sticks = { lx = 0, ly = 0, rx = 0, ry = 0 }
+
+----------------------------------------------------------------------
+-- Building the frame
+----------------------------------------------------------------------
+
+local function makeKey(parent, x, y)
+	local k = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+	k:SetSize(KEY, KEY)
+	k:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -y)
+	k:SetBackdrop(KEY_BACKDROP)
+	k.text = k:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	k.text:SetPoint("CENTER", 0, 1)
+	paintKey(k, "rest")
+	return k
+end
+
+local function makeHalf(f, anchorPoint, x)
+	local half = CreateFrame("Frame", nil, f)
+	half:SetSize(HALF_W, HALF_H)
+	half:SetPoint(anchorPoint, f, anchorPoint, x, -GRID_TOP)
+	half.keys = {}
+	for r = 1, ROWS do
+		half.keys[r] = {}
+		for c = 1, COLS do
+			half.keys[r][c] = makeKey(half, (c - 1) * (KEY + GAP), (r - 1) * (KEY + GAP))
+		end
+	end
+	local title = half:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	title:SetPoint("BOTTOM", half, "TOP", 0, 3)
+	half.title = title
+
+	-- The see-through ring you steer with the stick, drawn above the keys.
+	local ring = CreateFrame("Frame", nil, half)
+	ring:SetFrameLevel(half:GetFrameLevel() + 10)
+	ring:SetSize(KEY * 1.05, KEY * 1.05)
+	ring.tex = ring:CreateTexture(nil, "OVERLAY")
+	ring.tex:SetAllPoints()
+	ring.tex:SetTexture("Interface\\AddOns\\Comunimate\\Media\\ring")
+	half.ring = ring
+	return half
+end
+
+function KB:Build()
+	if self.frame then return end
+	local f = CreateFrame("Frame", "ComunimateKeyboard", UIParent, "BackdropTemplate")
+	self.frame = f
+	f:SetSize(W, H)
+	f:SetFrameStrata("DIALOG")
+	f:SetClampedToScreen(true)
+	f:SetMovable(true)
+	f:EnableMouse(true)
+	f:RegisterForDrag("LeftButton")
+	f:SetScript("OnDragStart", f.StartMoving)
+	f:SetScript("OnDragStop", function(frame)
+		frame:StopMovingOrSizing()
+		local point, _, relPoint, x, y = frame:GetPoint()
+		ns.db.position = { point, relPoint, x, y }
+	end)
+	f:Hide()
+
+	-- WoW dialog look: dark ground inside the game's gold dialog border (the
+	-- same frame as the game's pop-ups). Falls back to the classic dialog edge.
+	local ground = f:CreateTexture(nil, "BACKGROUND")
+	ground:SetPoint("TOPLEFT", 8, -8)
+	ground:SetPoint("BOTTOMRIGHT", -8, 8)
+	self.ground = ground
+	local ok = pcall(function()
+		local border = CreateFrame("Frame", nil, f, "DialogBorderTemplate")
+		border:SetAllPoints()
+		if border.Bg then border.Bg:Hide() end
+	end)
+	if not ok then
+		f:SetBackdrop({
+			edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+			edgeSize = 32,
+			insets = { left = 11, right = 12, top = 12, bottom = 11 },
+		})
+	end
+
+	-- Settings button and channel label (top right).
+	local gear = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+	gear:SetSize(76, 24)
+	gear:SetPoint("TOPRIGHT", f, "TOPRIGHT", -PAD, -PAD - 2)
+	gear:SetText("Settings")
+	gear:SetScript("OnClick", function() ns.Options:Toggle() end)
+
+	local channel = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	channel:SetPoint("RIGHT", gear, "LEFT", -10, 0)
+	self.channelText = channel
+
+	-- Our own text box. Voice typing and a physical keyboard type here too.
+	local input = CreateFrame("EditBox", "ComunimateInput", f, "BackdropTemplate")
+	input:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, -PAD)
+	input:SetPoint("RIGHT", channel, "LEFT", -10, 0)
+	input:SetHeight(INPUT_H)
+	input:SetAutoFocus(false)
+	input:SetMaxLetters(255)
+	input:SetFontObject(ChatFontNormal)
+	input:SetTextInsets(10, 10, 0, 0)
+	input:SetBackdrop(KEY_BACKDROP)
+	input:SetBackdropColor(0, 0, 0, 0.7)
+	input:SetBackdropBorderColor(unpack(COLOR_KEY_EDGE))
+	input:SetScript("OnEnterPressed", function() KB:SendMessage() end)
+	input:SetScript("OnEscapePressed", function() KB:Close() end)
+	input:SetScript("OnTextChanged", function() KB:OnTextChanged() end)
+	input:SetScript("OnCursorChanged", function() KB:OnTextChanged() end)
+	self.input = input
+
+	-- Suggestion bar.
+	self.sugSlots = {}
+	local sugW = (W - 2 * PAD - (SUGGESTIONS - 1) * GAP) / SUGGESTIONS
+	for i = 1, SUGGESTIONS do
+		-- The game's red buttons; the picked word stays lit.
+		local s = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+		s:SetSize(sugW, SUG_H)
+		s:SetPoint("TOPLEFT", f, "TOPLEFT", PAD + (i - 1) * (sugW + GAP), -(PAD + INPUT_H + 6))
+		s:SetScript("OnClick", function()
+			KB.state.sugIndex = i
+			KB:AcceptSuggestion()
+			KB.input:SetFocus()
+		end)
+		self.sugSlots[i] = s
+	end
+
+	-- The two halves.
+	self.halves = {
+		left = makeHalf(f, "TOPLEFT", PAD),
+		right = makeHalf(f, "TOPRIGHT", -PAD),
+	}
+	self.halves.left.ring.tex:SetVertexColor(COLOR_LEFT[1], COLOR_LEFT[2], COLOR_LEFT[3], 0.95)
+	self.halves.right.ring.tex:SetVertexColor(COLOR_RIGHT[1], COLOR_RIGHT[2], COLOR_RIGHT[3], 0.95)
+
+	-- Middle panel: big view of both selected keys, mode and voice status.
+	local mid = CreateFrame("Frame", nil, f)
+	mid:SetSize(MID_W, HALF_H)
+	mid:SetPoint("TOP", f, "TOP", 0, -GRID_TOP)
+	self.mid = mid
+
+	local selL = mid:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+	selL:SetPoint("TOPLEFT", mid, "TOPLEFT", 8, -6)
+	selL:SetTextColor(COLOR_LEFT[1], COLOR_LEFT[2], COLOR_LEFT[3])
+	self.selLeftText = selL
+
+	local selR = mid:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+	selR:SetPoint("TOPRIGHT", mid, "TOPRIGHT", -8, -6)
+	selR:SetTextColor(COLOR_RIGHT[1], COLOR_RIGHT[2], COLOR_RIGHT[3])
+	self.selRightText = selR
+
+	local mode = mid:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	mode:SetPoint("TOP", mid, "TOP", 0, -46)
+	self.modeText = mode
+
+	local status = mid:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	status:SetPoint("TOP", mode, "BOTTOM", 0, -8)
+	status:SetWidth(MID_W)
+	status:SetWordWrap(true)
+	self.statusText = status
+
+	local dbg = mid:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	dbg:SetPoint("BOTTOM", mid, "BOTTOM", 0, 2)
+	self.debugText = dbg
+
+	-- Button legend.
+	local leg1 = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	leg1:SetPoint("BOTTOM", f, "BOTTOM", 0, PAD + 24)
+	local leg2 = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	leg2:SetPoint("BOTTOM", f, "BOTTOM", 0, PAD)
+	self.legend = { leg1, leg2 }
+
+	-- Voice-only box ("compact"): mascot, title, the text, and a short hint.
+	local mascot = f:CreateTexture(nil, "ARTWORK")
+	mascot:SetSize(40, 40)
+	mascot:SetPoint("TOPLEFT", f, "TOPLEFT", PAD - 2, -PAD + 4)
+	self.compactMascot = mascot
+	local ctitle = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	ctitle:SetPoint("LEFT", mascot, "RIGHT", 10, 0)
+	ctitle:SetPoint("RIGHT", channel, "LEFT", -10, 0)
+	ctitle:SetJustifyH("LEFT")
+	ctitle:SetWordWrap(false)
+	self.compactTitle = ctitle
+	local chint = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	chint:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", PAD, PAD + 4)
+	chint:SetJustifyH("LEFT")
+	self.compactHint = chint
+
+	-- Commit or throw away what you said (the controller buttons do the same).
+	local csend = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+	csend:SetSize(150, 26)
+	csend:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -PAD, PAD - 2)
+	csend:SetScript("OnClick", function() KB:SendMessage() end)
+	local ccancel = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+	ccancel:SetSize(120, 26)
+	ccancel:SetPoint("RIGHT", csend, "LEFT", -8, 0)
+	ccancel:SetScript("OnClick", function() KB:Close() end)
+	self.compactSend, self.compactCancel = csend, ccancel
+	self.compactParts = { mascot, ctitle, chint, csend, ccancel }
+
+	-- Controller input. While the keyboard is open it takes the sticks and
+	-- buttons, so L2/R2 type letters instead of switching action bars.
+	pcall(f.EnableGamePadButton, f, true)
+	pcall(f.EnableGamePadStick, f, true)
+	if not InCombatLockdown() then
+		pcall(f.SetPropagateKeyboardInput, f, false)
+	end
+	f:SetScript("OnGamePadButtonDown", function(_, button) KB:OnButton(button, true) end)
+	f:SetScript("OnGamePadButtonUp", function(_, button) KB:OnButton(button, false) end)
+	f:SetScript("OnGamePadStick", function(_, stick, x, y) KB:OnStickEvent(stick, x, y) end)
+	f:SetScript("OnUpdate", function(_, elapsed) KB:OnUpdate(elapsed) end)
+	f:SetScript("OnHide", function() KB:OnHidden() end)
+
+	-- Secure send button. Pressing Send (out of combat) "clicks" this through a
+	-- temporary binding, so WoW runs "/s message" as if you typed it yourself.
+	-- That's the only way an add-on may send Say/Yell outdoors or during lockdown.
+	local send = CreateFrame("Button", "ComunimateSendButton", UIParent, "SecureActionButtonTemplate")
+	send:SetAttribute("type", "macro")
+	-- Down and up: binding clicks arrive on one or the other depending on the
+	-- player's "cast on key down" setting. The macro is cleared after the first.
+	send:RegisterForClicks("AnyDown", "AnyUp")
+	send:SetScript("PostClick", function() KB:OnSecureSent() end)
+	self.sendButton = send
+	self.sendOwner = CreateFrame("Frame")
+
+	-- Everything the voice-only box hides.
+	self.fullParts = { self.halves.left, self.halves.right, mid, leg1, leg2 }
+	for _, s in ipairs(self.sugSlots) do self.fullParts[#self.fullParts + 1] = s end
+	self:SetCompact(false)
+
+	self:ApplyLayout()
+	self:BuildComboWatcher()
+	self:SetupVoiceKeys()
+end
+
+local COMPACT_H = PAD + 44 + INPUT_H + 14 + 30 + PAD
+
+-- Switch between the full keyboard and the small voice-only box.
+function KB:SetCompact(on)
+	self.compact = on and true or false
+	local f = self.frame
+	for _, p in ipairs(self.fullParts) do p:SetShown(not self.compact) end
+	for _, p in ipairs(self.compactParts) do p:SetShown(self.compact) end
+	self.input:ClearAllPoints()
+	if self.compact then
+		f:SetSize(W, COMPACT_H)
+		self.input:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, -(PAD + 44))
+		self.input:SetPoint("RIGHT", f, "RIGHT", -PAD, 0)
+	else
+		f:SetSize(W, H)
+		self.input:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, -PAD)
+		self.input:SetPoint("RIGHT", self.channelText, "LEFT", -10, 0)
+	end
+	self:RefreshStatus()
+	self:RefreshLegend()
+end
+
+function KB:ApplyLayout()
+	local f = self.frame
+	if not f then return end
+	f:SetScale(ns.db.scale or 1)
+	self.ground:SetColorTexture(0.03, 0.025, 0.02, ns.db.kbAlpha or 0.95)
+	f:ClearAllPoints()
+	local p = ns.db.position
+	if p then
+		f:SetPoint(p[1], UIParent, p[2], p[3], p[4])
+	else
+		f:SetPoint("BOTTOM", UIParent, "BOTTOM", 0, 180)
+	end
+end
+
+----------------------------------------------------------------------
+-- Show / hide
+----------------------------------------------------------------------
+
+function KB:IsShown()
+	return self.frame and self.frame:IsShown() or false
+end
+
+-- compact: show the small voice-only box instead of the full keyboard.
+function KB:Show(compact)
+	if not self.frame then self:Build() end
+	self:SetCompact(compact)
+	self.state.layer = "letters"
+	self.state.shift = false
+	-- While open, the keyboard gets the button releases, so forget what the
+	-- combo watcher thought was held.
+	if self.watcher then wipe(self.watcher.held) end
+	self.held = {}
+	self:CenterCursors()
+	self.frame:Show()
+	self.input:SetFocus()
+	self:OnTextChanged()
+	self:RefreshAll()
+end
+
+-- Hide but keep what was typed (e.g. after a blocked send).
+function KB:Hide()
+	if self.frame and self.frame:IsShown() then self.frame:Hide() end
+end
+
+-- Hide and throw away the text.
+function KB:Close()
+	if self.input then self.input:SetText("") end
+	self:Hide()
+end
+
+function KB:Toggle()
+	if self:IsShown() then self:Close() else self:Show() end
+end
+
+function KB:OnHidden()
+	self:EndSecureSend()
+	self.input:ClearFocus()
+	self.repeatAction = nil
+	self.repeatButton = nil
+	self.voiceState, self.voiceTimer, self.awaitApp = nil, nil, nil
+	self.status = nil
+end
+
+----------------------------------------------------------------------
+-- Sticks
+----------------------------------------------------------------------
+
+local LEFT_STICKS = { Left = true, Move = true, Movement = true }
+local RIGHT_STICKS = { Right = true, Look = true, Camera = true }
+
+function KB:OnStickEvent(stick, x, y)
+	if LEFT_STICKS[stick] then
+		self.sticks.lx, self.sticks.ly = x or 0, y or 0
+	elseif RIGHT_STICKS[stick] then
+		self.sticks.rx, self.sticks.ry = x or 0, y or 0
+	end
+end
+
+-- Prefer reading the controller directly; fall back to stick events.
+function KB:ReadSticks()
+	if C_GamePad and C_GamePad.GetDeviceMappedState then
+		local ok, state = pcall(C_GamePad.GetDeviceMappedState)
+		if ok and state and state.sticks and state.sticks[1] then
+			local l, r = state.sticks[1], state.sticks[2]
+			return l.x or 0, l.y or 0, r and r.x or 0, r and r.y or 0, "mapped"
+		end
+	end
+	local s = self.sticks
+	return s.lx, s.ly, s.rx, s.ry, "events"
+end
+
+local function stickToCell(x, y)
+	local db = ns.db
+	if db.invertY then y = -y end
+	local col
+	if x < -db.colOuter then col = 1
+	elseif x < -db.colInner then col = 2
+	elseif x <= db.colInner then col = 3
+	elseif x <= db.colOuter then col = 4
+	else col = 5 end
+	local row
+	if y > db.rowThreshold then row = 1
+	elseif y < -db.rowThreshold then row = 3
+	else row = 2 end
+	return row, col
+end
+
+----------------------------------------------------------------------
+-- Update loop
+----------------------------------------------------------------------
+
+local REPEAT_DELAY, REPEAT_RATE = 0.45, 0.06
+local STICK_DEADZONE = 0.15
+local CELL = KEY + GAP
+
+-- Ring cursor position per half, in pixels from the half's top-left corner.
+KB.cursor = { left = { x = 0, y = 0 }, right = { x = 0, y = 0 } }
+
+local function cellAt(x, y)
+	local col = math.min(COLS, math.max(1, math.floor(x / CELL) + 1))
+	local row = math.min(ROWS, math.max(1, math.floor(y / CELL) + 1))
+	return row, col
+end
+
+local function cellCenter(row, col)
+	return (col - 1) * CELL + KEY / 2, (row - 1) * CELL + KEY / 2
+end
+
+function KB:PlaceRing(side)
+	local half = self.halves and self.halves[side]
+	if not half then return end
+	local c = self.cursor[side]
+	half.ring:ClearAllPoints()
+	half.ring:SetPoint("CENTER", half, "TOPLEFT", c.x, -c.y)
+end
+
+-- Rings back on the middle keys.
+function KB:CenterCursors()
+	for _, side in ipairs({ "left", "right" }) do
+		local c = self.cursor[side]
+		c.x, c.y = cellCenter(2, 3)
+		self.state.sel[side][1], self.state.sel[side][2] = 2, 3
+		self:PlaceRing(side)
+	end
+end
+
+local SPRING_DELAY = 0.15  -- rest this long before the ring heads home (time to press L2/R2)
+local SPRING_RATE = 16    -- how quickly it glides back
+
+-- Ring modes: the stick steers the ring; farther push = faster.
+-- "spring": once you let go of the stick, the ring glides back to the middle key.
+-- "free":   the ring stays where you left it.
+function KB:SteerRing(side, x, y, elapsed)
+	if ns.db.invertY then y = -y end
+	local c = self.cursor[side]
+	local mag = math.sqrt(x * x + y * y)
+	if mag <= STICK_DEADZONE then
+		if ns.db.cursorMode ~= "spring" then return end
+		c.rest = (c.rest or 0) + elapsed
+		if c.rest < SPRING_DELAY then return end
+		local hx, hy = cellCenter(2, 3)
+		local t = math.min(1, elapsed * SPRING_RATE)
+		c.x, c.y = c.x + (hx - c.x) * t, c.y + (hy - c.y) * t
+		if math.abs(hx - c.x) < 0.5 and math.abs(hy - c.y) < 0.5 then c.x, c.y = hx, hy end
+		self:PlaceRing(side)
+		return
+	end
+	c.rest = 0
+	local push = math.min(1, (mag - STICK_DEADZONE) / (1 - STICK_DEADZONE))
+	local speed = (ns.db.cursorSpeed or 520) * push ^ 1.6
+	c.x = math.min(HALF_W - 1, math.max(1, c.x + x / mag * speed * elapsed))
+	c.y = math.min(HALF_H - 1, math.max(1, c.y - y / mag * speed * elapsed))
+	self:PlaceRing(side)
+end
+
+function KB:OnUpdate(elapsed)
+	local lx, ly, rx, ry, source = self:ReadSticks()
+	local sel = self.state.sel
+	local lr, lc, rr, rc
+	if ns.db.cursorMode == "snap" then
+		-- Snap mode: the stick points at a key directly; the ring jumps there.
+		lr, lc = stickToCell(lx, ly)
+		rr, rc = stickToCell(rx, ry)
+		for side, cell in pairs({ left = { lr, lc }, right = { rr, rc } }) do
+			local c = self.cursor[side]
+			c.x, c.y = cellCenter(cell[1], cell[2])
+			self:PlaceRing(side)
+		end
+	else
+		self:SteerRing("left", lx, ly, elapsed)
+		self:SteerRing("right", rx, ry, elapsed)
+		lr, lc = cellAt(self.cursor.left.x, self.cursor.left.y)
+		rr, rc = cellAt(self.cursor.right.x, self.cursor.right.y)
+	end
+	if lr ~= sel.left[1] or lc ~= sel.left[2] or rr ~= sel.right[1] or rc ~= sel.right[2] then
+		sel.left[1], sel.left[2] = lr, lc
+		sel.right[1], sel.right[2] = rr, rc
+		self:RefreshSelection()
+	end
+
+	if ns.db.debug then
+		self.debugText:SetFormattedText("%s  L %.2f %.2f  R %.2f %.2f", source, lx, ly, rx, ry)
+	end
+
+	-- Voice / status timeouts.
+	if self.voiceTimer then
+		self.voiceTimer = self.voiceTimer - elapsed
+		if self.voiceTimer <= 0 then self:SetVoiceState(nil) end
+	end
+	if self.awaitApp then
+		self.awaitApp = self.awaitApp - elapsed
+		if self.awaitApp <= 0 then
+			self.awaitApp = nil
+			self:SetVoiceState("noapp")
+		end
+	end
+	if self.statusTimer then
+		self.statusTimer = self.statusTimer - elapsed
+		if self.statusTimer <= 0 then
+			self.statusTimer, self.status = nil, nil
+			self:RefreshStatus()
+		end
+	end
+
+	-- Secure send didn't happen (binding didn't fire): send the normal way.
+	if self.pendingSend then
+		self.pendingSend.timer = self.pendingSend.timer - elapsed
+		if self.pendingSend.timer <= 0 then
+			local text = self.pendingSend.text
+			self:EndSecureSend()
+			if ns.db.debug then ns:Print("secure send didn't fire, using chat API") end
+			self:FinishSend(text, ns.Chat:Send(text, ns.Chat:ChannelAt(ns.db.channel)))
+		end
+	end
+
+	-- Hold-to-repeat (backspace).
+	if self.repeatAction then
+		self.repeatTimer = self.repeatTimer - elapsed
+		if self.repeatTimer <= 0 then
+			self.repeatTimer = REPEAT_RATE
+			self.actions[self.repeatAction](self)
+		end
+	end
+end
+
+----------------------------------------------------------------------
+-- Text editing
+----------------------------------------------------------------------
+
+local function splitAtCursor(eb)
+	local text = eb:GetText() or ""
+	local pos = eb:GetCursorPosition() or #text
+	return text:sub(1, pos), text:sub(pos + 1)
+end
+
+function KB:Insert(s)
+	self.input:Insert(s)
+end
+
+function KB:Backspace()
+	local eb = self.input
+	local before, after = splitAtCursor(eb)
+	if before == "" then return end
+	-- Step back over one whole UTF-8 character.
+	local i = #before
+	while i > 1 do
+		local b = before:byte(i)
+		if b < 0x80 or b >= 0xC0 then break end
+		i = i - 1
+	end
+	before = before:sub(1, i - 1)
+	eb:SetText(before .. after)
+	eb:SetCursorPosition(#before)
+end
+
+function KB:OnTextChanged()
+	if not self.input then return end
+	local before = splitAtCursor(self.input)
+	local text = self.input:GetText() or ""
+	if text ~= self.lastText then
+		self.lastText = text
+		-- Voice text arrived.
+		if self.voiceState == "thinking" then self:SetVoiceState(nil) end
+	end
+
+	local partial = before:match("[%w']+$") or ""
+	local rest = before:sub(1, #before - #partial)
+	local prev = rest:match("([%w']+)[^%w']*$")
+	self.state.suggestions = ns.Suggest:Query(partial, prev, SUGGESTIONS)
+	self.state.sugIndex = 1
+	if self:IsShown() then self:RefreshSuggestions() end
+	if self.compact then self:RefreshStatus() end
+end
+
+function KB:AcceptSuggestion()
+	local word = self.state.suggestions[self.state.sugIndex]
+	if not word then return end
+	local eb = self.input
+	local before, after = splitAtCursor(eb)
+	local partial = before:match("[%w']+$") or ""
+	before = before:sub(1, #before - #partial) .. word
+	if after:sub(1, 1) ~= " " then before = before .. " " end
+	eb:SetText(before .. after)
+	eb:SetCursorPosition(#before)
+end
+
+----------------------------------------------------------------------
+-- Status line (middle panel)
+----------------------------------------------------------------------
+
+function KB:SetStatus(text, seconds)
+	self.status = text
+	self.statusTimer = seconds
+	self:RefreshStatus()
+end
+
+----------------------------------------------------------------------
+-- Actions
+----------------------------------------------------------------------
+
+function KB:TypeSide(side)
+	local st = self.state
+	local r, c = st.sel[side][1], st.sel[side][2]
+	local ch = LAYERS[st.layer][side][r][c]
+	if st.layer == "letters" and (st.shift or st.caps) then ch = ch:upper() end
+	self:Insert(ch)
+	self:Flash(side, r, c)
+	if st.shift then
+		st.shift = false
+		self:RefreshKeys()
+	end
+end
+
+-- Send with the chat API (physical Enter key, or in combat).
+function KB:SendMessage()
+	local text = self.input:GetText() or ""
+	if not text:find("%S") then
+		self:Close()
+		return
+	end
+	self:FinishSend(text, ns.Chat:Send(text, ns.Chat:ChannelAt(ns.db.channel)))
+end
+
+function KB:FinishSend(text, ok, err)
+	if not ok then
+		self:SetStatus("|cffff7f40" .. tostring(err) .. "|r", 8)
+		return
+	end
+	ns.Suggest:Learn(text)
+	self.input:AddHistoryLine(text)
+	self.input:SetText("")
+	if ns.db.closeAfterSend then self:Hide() end
+end
+
+-- Controller Send: arm the secure button and let this press reach it.
+-- Returns true if the press should be passed on to the binding.
+function KB:BeginSecureSend(button)
+	if InCombatLockdown() or not self.frame.SetPropagateKeyboardInput then return false end
+	local text = self.input:GetText() or ""
+	if not text:find("%S") then
+		self:Close()
+		return false
+	end
+	local macro, err = ns.Chat:MacroFor(text, ns.Chat:ChannelAt(ns.db.channel))
+	if not macro then
+		self:SetStatus("|cffff7f40" .. err .. "|r", 8)
+		return false
+	end
+	self.sendButton:SetAttribute("macrotext", macro)
+	SetOverrideBindingClick(self.sendOwner, true, button, "ComunimateSendButton")
+	self.pendingSend = { text = text, timer = 0.5 }
+	self.input:ClearFocus()  -- a focused text box can swallow the binding
+	self.frame:SetPropagateKeyboardInput(true)
+	return true
+end
+
+function KB:OnSecureSent()
+	local pending = self.pendingSend
+	if not pending then return end
+	if not InCombatLockdown() then self.sendButton:SetAttribute("macrotext", nil) end
+	self:EndSecureSend()
+	if ns.db.debug then ns:Print("sent with secure button") end
+	self:FinishSend(pending.text, true)
+end
+
+function KB:EndSecureSend()
+	self.pendingSend = nil
+	if InCombatLockdown() then return end
+	if self.sendOwner then ClearOverrideBindings(self.sendOwner) end
+	if self.frame then self.frame:SetPropagateKeyboardInput(false) end
+end
+
+KB.actions = {
+	TYPE_LEFT = function(self) self:TypeSide("left") end,
+	TYPE_RIGHT = function(self) self:TypeSide("right") end,
+	SPACE = function(self) self:Insert(" ") end,
+	BACKSPACE = function(self) self:Backspace() end,
+	ACCEPT = function(self) self:AcceptSuggestion() end,
+	NEXT_SUGGESTION = function(self)
+		local n = #self.state.suggestions
+		if n > 0 then self.state.sugIndex = self.state.sugIndex % n + 1 end
+		self:RefreshSuggestions()
+	end,
+	PREV_SUGGESTION = function(self)
+		local n = #self.state.suggestions
+		if n > 0 then self.state.sugIndex = (self.state.sugIndex - 2) % n + 1 end
+		self:RefreshSuggestions()
+	end,
+	SHIFT = function(self)
+		local st = self.state
+		if st.caps then st.caps = false st.shift = false
+		else st.shift = not st.shift end
+		self:RefreshKeys()
+	end,
+	CAPSLOCK = function(self)
+		self.state.caps = not self.state.caps
+		self.state.shift = false
+		self:RefreshKeys()
+	end,
+	SYMBOLS = function(self)
+		self.state.layer = (self.state.layer == "letters") and "symbols" or "letters"
+		self:RefreshKeys()
+	end,
+	CHANNEL = function(self)
+		ns.db.channel = ns.db.channel % ns.Chat:NumChannels() + 1
+		self:RefreshChannel()
+	end,
+	CLEAR = function(self) self.input:SetText("") end,
+	SEND = function(self) self:SendMessage() end,
+	CLOSE = function(self) self:Close() end,
+}
+
+local REPEATING = { BACKSPACE = true }
+local COMPACT_IGNORED = {
+	TYPE_LEFT = true, TYPE_RIGHT = true, SHIFT = true, CAPSLOCK = true, SYMBOLS = true,
+	PREV_SUGGESTION = true, NEXT_SUGGESTION = true,
+}
+
+----------------------------------------------------------------------
+-- Voice (PS5 mic button). The Comunimate helper app listens and types into
+-- our text box; the add-on opens the keyboard and shows what's happening.
+--   hold the mic  = talk
+--   tap the mic   = open / close the keyboard
+----------------------------------------------------------------------
+
+local THINKING_TIMEOUT = 8
+local NOAPP_TIMEOUT = 6
+local APP_WAIT = 0.75  -- how long to wait for the helper's signal after the mic press
+local TAP_TIME = 0.35  -- shorter than this counts as a tap
+
+function KB:SetVoiceState(state)
+	self.voiceState = state
+	if state == "thinking" then
+		self.voiceTimer = THINKING_TIMEOUT
+	elseif state == "noapp" then
+		self.voiceTimer = NOAPP_TIMEOUT
+	else
+		self.voiceTimer = nil
+	end
+	self:RefreshStatus()
+	if ns.Badge then ns.Badge:SetState(state) end
+end
+
+-- source: "pad" = WoW saw the mic button (only while the keyboard is open),
+--         "app" = signal key from the helper.
+function KB:OnVoiceButton(down, source)
+	if source == "app" then self.awaitApp = nil end
+	if down then
+		if self.voiceState == "listening" then return end  -- both sources report the same press
+		self.wasOpen = self:IsShown()
+		self.pressedAt = GetTime()
+		if not self.wasOpen then self:Show(not ns.db.voiceShowsKeyboard) end
+		-- If only the game saw the press, check the helper answers too.
+		if source == "pad" then self.awaitApp = APP_WAIT end
+		self:SetVoiceState("listening")
+	elseif self.voiceState == "listening" then
+		if GetTime() - (self.pressedAt or 0) < TAP_TIME then
+			self.awaitApp = nil
+			self:SetVoiceState(nil)
+			if self.wasOpen then self:Close() end
+		else
+			self:SetVoiceState("thinking")
+		end
+	end
+end
+
+-- WoW doesn't pass the PS5 mic button to add-ons while the keyboard is closed,
+-- so the helper presses a hidden key combo when you press and release it
+-- (CTRL-SHIFT-F10 / F11). These are temporary bindings, never saved. While the
+-- keyboard is open its text box gets the keys instead (see OnKeyDown below).
+function KB:SetupVoiceKeys()
+	local owner = self.voiceKeyOwner
+	if not owner then
+		owner = CreateFrame("Frame")
+		owner:SetScript("OnEvent", function(frame, event)
+			if event == "PLAYER_REGEN_ENABLED" then
+				frame:UnregisterEvent("PLAYER_REGEN_ENABLED")
+				KB:SetupVoiceKeys()
+			elseif event == "UPDATE_BINDINGS" and not KB.settingUpKeys then
+				-- Player's bindings loaded or changed: follow the open-chat combo.
+				C_Timer.After(0, function() KB:SetupVoiceKeys() end)
+			end
+		end)
+		owner:RegisterEvent("UPDATE_BINDINGS")
+		self.voiceKeyOwner = owner
+		-- Signal keys arriving while our text box has focus.
+		self.input:HookScript("OnKeyDown", function(_, key) KB:OnInputKey(key) end)
+	end
+	if InCombatLockdown() then
+		owner:RegisterEvent("PLAYER_REGEN_ENABLED")
+		return
+	end
+	-- Our own override changes fire UPDATE_BINDINGS too; ignore those.
+	self.settingUpKeys = true
+	C_Timer.After(0.5, function() KB.settingUpKeys = false end)
+	ClearOverrideBindings(owner)
+	if ns.db.voiceOpensKeyboard then
+		SetOverrideBinding(owner, true, ns.db.voiceStartKey, "COMUNIMATE_VOICE_START")
+		SetOverrideBinding(owner, true, ns.db.voiceStopKey, "COMUNIMATE_VOICE_STOP")
+	end
+	-- Claim the talk button so the game's own use of it (bags, in Forever's
+	-- default controls) never fires when you press it to talk.
+	if ns.db.talkButton then
+		SetOverrideBinding(owner, true, ns.db.talkButton, "COMUNIMATE_TALK")
+	end
+	-- The controller's "open chat" combo (Forever: L1+R1+D-Down) opens our
+	-- keyboard instead of Blizzard's chat box. Keyboard Enter is left alone.
+	self.chatComboKeys = {}
+	if ns.db.takeOverChatCombo then
+		for _, key in ipairs({ GetBindingKey("OPENCHAT") }) do
+			if key:find("PAD") then
+				SetOverrideBinding(owner, true, key, "COMUNIMATE_TOGGLE")
+				self.chatComboKeys[#self.chatComboKeys + 1] = key
+			end
+		end
+	end
+	if ns.db.debug then
+		ns:Print("controller chat combo binding: " .. (#self.chatComboKeys > 0 and table.concat(self.chatComboKeys, ", ") or "none (the watcher handles it)"))
+	end
+	self:UpdateComboWatcher()
+end
+
+-- Catches the controller's chat combo (L1 + R1 + D-Down) while the keyboard is
+-- closed: opens our keyboard and stops the press from also opening the game's
+-- chat box. Every other button passes straight through to the game. It only
+-- listens once WoW confirms presses pass through, and it's switched back to
+-- "pass everything" as combat starts, so it can never swallow your buttons.
+function KB:BuildComboWatcher()
+	if self.watcher then return end
+	local w = CreateFrame("Frame", "ComunimateComboWatcher", UIParent)
+	self.watcher = w
+	w:SetSize(1, 1)
+	w:SetPoint("TOPLEFT")
+	w.held = {}
+	w:SetScript("OnGamePadButtonDown", function(frame, button)
+		frame.held[button] = true
+		if button == "PADDDOWN" and frame.held.PADLSHOULDER and frame.held.PADRSHOULDER
+			and ns.db.takeOverChatCombo and not KB:IsShown() and not InCombatLockdown() then
+			frame:SetPropagateKeyboardInput(false)  -- keep the game's chat box closed
+			if ns.db.debug then ns:Print("chat combo caught: opening keyboard") end
+			KB:Show()
+			C_Timer.After(0, function()
+				if not InCombatLockdown() then frame:SetPropagateKeyboardInput(true) end
+			end)
+		end
+	end)
+	w:SetScript("OnGamePadButtonUp", function(frame, button) frame.held[button] = nil end)
+	w:SetScript("OnEvent", function(frame, event)
+		if event == "PLAYER_REGEN_DISABLED" then
+			frame:SetPropagateKeyboardInput(true)  -- last chance before combat lockdown
+		else
+			KB:UpdateComboWatcher()
+		end
+	end)
+	w:RegisterEvent("PLAYER_REGEN_DISABLED")
+	w:RegisterEvent("PLAYER_REGEN_ENABLED")
+	self:UpdateComboWatcher()
+end
+
+function KB:UpdateComboWatcher()
+	local w = self.watcher
+	if not w or InCombatLockdown() or not w.EnableGamePadButton then return end
+	w:SetPropagateKeyboardInput(true)
+	local passes = w.GetPropagateKeyboardInput and w:GetPropagateKeyboardInput()
+	w:EnableGamePadButton((passes and ns.db.takeOverChatCombo) and true or false)
+end
+
+local function isDown(fn) return fn() and true or false end
+local function matchesKey(spec, key)
+	local mods, k = (spec or ""):match("^(.-)%-?([^%-]+)$")
+	if not k or k ~= key then return false end
+	return (mods:find("CTRL") ~= nil) == isDown(IsControlKeyDown)
+		and (mods:find("SHIFT") ~= nil) == isDown(IsShiftKeyDown)
+		and (mods:find("ALT") ~= nil) == isDown(IsAltKeyDown)
+end
+
+function KB:OnInputKey(key)
+	if matchesKey(ns.db.voiceStartKey, key) then
+		if ns.db.debug then ns:Print("voice start key received") end
+		self:OnVoiceButton(true, "app")
+	elseif matchesKey(ns.db.voiceStopKey, key) then
+		if ns.db.debug then ns:Print("voice stop key received") end
+		self:OnVoiceButton(false, "app")
+	end
+end
+
+function KB:OnButton(button, down)
+	-- Remember held shoulders so L1 + R1 + D-Down can switch the small box to the keyboard.
+	self.held = self.held or {}
+	self.held[button] = down or nil
+	if down and button == "PADDDOWN" and self.compact and self.held.PADLSHOULDER and self.held.PADRSHOULDER then
+		self:SetCompact(false)
+		self:RefreshAll()
+		return
+	end
+	if ns.GetAction(button) == "VOICE" then
+		if ns.db.debug and down then ns:Print("button " .. button .. " -> VOICE") end
+		self:OnVoiceButton(down, "pad")
+		return
+	end
+	if not down then
+		if self.repeatButton == button then
+			self.repeatAction, self.repeatButton = nil, nil
+		end
+		return
+	end
+	if ns.db.debug then ns:Print("button " .. button .. " -> " .. tostring(ns.GetAction(button))) end
+	local action = ns.GetAction(button)
+	if self.pendingSend then return end  -- a send is in flight; ignore other presses for a moment
+	if self.compact then
+		-- Voice-only box: "use word" opens the full keyboard; typing keys do nothing.
+		if action == "ACCEPT" then
+			self:SetCompact(false)
+			self:RefreshAll()
+			return
+		end
+		if COMPACT_IGNORED[action] then return end
+	end
+	if action == "SEND" then
+		if self:BeginSecureSend(button) then return end
+		if not self:IsShown() then return end  -- empty text closed the keyboard
+	end
+	local fn = action and self.actions[action]
+	if not fn then return end
+	fn(self)
+	if REPEATING[action] then
+		self.repeatAction, self.repeatButton, self.repeatTimer = action, button, REPEAT_DELAY
+	end
+end
+
+----------------------------------------------------------------------
+-- Drawing
+----------------------------------------------------------------------
+
+function KB:RefreshKeys()
+	if not self.frame then return end
+	local st = self.state
+	local upper = st.layer == "letters" and (st.shift or st.caps)
+	for side, half in pairs(self.halves) do
+		local grid = LAYERS[st.layer][side]
+		for r = 1, ROWS do
+			for c = 1, COLS do
+				local ch = grid[r][c]
+				half.keys[r][c].text:SetText(upper and ch:upper() or ch)
+			end
+		end
+	end
+	self.halves.left.title:SetText(ns.ButtonIcon("LSTICK", 20) .. "  pick     type  " .. ns.ButtonIcon("PADLTRIGGER", 20))
+	self.halves.right.title:SetText(ns.ButtonIcon("PADRTRIGGER", 20) .. "  type     pick  " .. ns.ButtonIcon("RSTICK", 20))
+
+	local mode = st.layer == "symbols" and "123" or (st.caps and "|cffffd100CAPS|r" or (st.shift and "|cffffd100Shift|r" or "abc"))
+	self.modeText:SetText(mode)
+	self:RefreshSelection()
+end
+
+function KB:RefreshSelection()
+	if not self.frame then return end
+	local st = self.state
+	local upper = st.layer == "letters" and (st.shift or st.caps)
+	for side, half in pairs(self.halves) do
+		local sr, sc = st.sel[side][1], st.sel[side][2]
+		local on = side == "left" and COLOR_LEFT or COLOR_RIGHT
+		for r = 1, ROWS do
+			for c = 1, COLS do
+				paintKey(half.keys[r][c], (r == sr and c == sc) and side or "rest")
+			end
+		end
+	end
+	local function label(side)
+		local ch = LAYERS[st.layer][side][st.sel[side][1]][st.sel[side][2]]
+		return upper and ch:upper() or ch
+	end
+	self.selLeftText:SetText(ns.ButtonIcon("PADLTRIGGER", 26) .. " " .. label("left"))
+	self.selRightText:SetText(label("right") .. " " .. ns.ButtonIcon("PADRTRIGGER", 26))
+end
+
+function KB:Flash(side, r, c)
+	paintKey(self.halves[side].keys[r][c], "flash")
+	C_Timer.After(0.08, function() KB:RefreshSelection() end)
+end
+
+local function escape(s) return (s:gsub("|", "||")) end
+
+function KB:RefreshStatus()
+	if not self.frame then return end
+	local text = ""
+	local mic = "|T" .. ns.IconPath("mic") .. ":16:16|t "
+	if self.voiceState == "listening" then
+		text = "|T" .. ns.IconPath("mic_live") .. ":16:16|t |cffff5555Listening...|r"
+	elseif self.voiceState == "thinking" then
+		text = mic .. "|cffaaaaaaWriting it down...|r"
+	elseif self.voiceState == "noapp" then
+		text = mic .. "|cffff9900Voice helper isn't running. Start Comunimate from the Start menu.|r"
+	elseif self.status then
+		text = self.status
+	end
+	self.statusText:SetText(text)
+
+	-- Voice-only box title.
+	if self.compact then
+		local title
+		if self.status and not self.voiceState then
+			title = self.status
+		elseif self.voiceState == "listening" then
+			title = "|cffff6050Listening to your wisdom...|r"
+		elseif self.voiceState == "thinking" then
+			title = "Writing down your wisdom..."
+		elseif self.voiceState == "noapp" then
+			title = "|cffff9900The voice helper isn't running.|r"
+		elseif (self.input:GetText() or ""):find("%S") then
+			title = "Your wisdom is ready. Send it to chat?"
+		else
+			title = "Hold the mic button and share your wisdom."
+		end
+		self.compactTitle:SetText(title)
+		self.compactMascot:SetTexture(ns.Mascot:Path(self.voiceState == "listening"))
+	end
+end
+
+function KB:RefreshChannel()
+	if not self.frame then return end
+	self.channelText:SetText(ns.Chat:ChannelLabel(ns.db.channel) .. "  " .. ns.ActionButtonIcon("CHANNEL", 18))
+end
+
+function KB:RefreshSuggestions()
+	if not self.frame then return end
+	local st = self.state
+	for i, slot in ipairs(self.sugSlots) do
+		local word = st.suggestions[i]
+		slot:SetText(word and escape(word) or "")
+		slot:SetEnabled(word ~= nil)
+		if word and i == st.sugIndex then slot:LockHighlight() else slot:UnlockHighlight() end
+	end
+end
+
+local LEGEND = {
+	{ { "SPACE" }, { "BACKSPACE" }, { "ACCEPT" }, { "PREV_SUGGESTION", "NEXT_SUGGESTION", "Pick word" }, { "SHIFT" }, { "CAPSLOCK" } },
+	{ { "SYMBOLS" }, { "CHANNEL" }, { "CLEAR" }, { "VOICE" }, { "SEND" }, { "CLOSE" } },
+}
+
+local LEGEND_ICON = 18
+
+function KB:RefreshLegend()
+	if not self.frame then return end
+	for line, items in ipairs(LEGEND) do
+		local parts = {}
+		for _, item in ipairs(items) do
+			if item[3] then
+				parts[#parts + 1] = ns.ActionButtonIcon(item[1], LEGEND_ICON) .. ns.ActionButtonIcon(item[2], LEGEND_ICON) .. " " .. item[3]
+			else
+				parts[#parts + 1] = ns.ActionButtonIcon(item[1], LEGEND_ICON) .. " " .. ns.ActionLabels[item[1]]
+			end
+		end
+		self.legend[line]:SetText(table.concat(parts, "    "))
+	end
+	local icon = function(action) return ns.ActionButtonIcon(action, LEGEND_ICON) end
+	self.compactHint:SetText(icon("VOICE") .. " Hold to add more    " .. icon("BACKSPACE") .. " Delete    "
+		.. icon("ACCEPT") .. " Keyboard")
+	self.compactSend:SetText(icon("SEND") .. " Send to chat")
+	self.compactCancel:SetText(icon("CLOSE") .. " Cancel")
+end
+
+function KB:RefreshAll()
+	if not self.frame then return end
+	self.debugText:SetShown(ns.db.debug)
+	self:RefreshKeys()
+	self:RefreshLegend()
+	self:RefreshChannel()
+	self:RefreshStatus()
+	self:RefreshSuggestions()
+end

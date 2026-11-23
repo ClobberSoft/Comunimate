@@ -1,0 +1,14 @@
+<Bindings>
+	<Binding name="COMUNIMATE_TOGGLE" header="COMUNIMATE" category="ADDONS">
+		Comunimate_Toggle()
+	</Binding>
+	<Binding name="COMUNIMATE_TALK" runOnUp="true" category="ADDONS">
+		Comunimate_Talk(keystate)
+	</Binding>
+	<Binding name="COMUNIMATE_VOICE_START" category="ADDONS">
+		Comunimate_VoiceStart()
+	</Binding>
+	<Binding name="COMUNIMATE_VOICE_STOP" category="ADDONS">
+		Comunimate_VoiceStop()
+	</Binding>
+</Bindings>

@@ -1,0 +1,27 @@
+# Python environment and caches
+ComunimateVoice/.venv/
+__pycache__/
+*.pyc
+
+# Build output (installers are published on GitHub Releases, not in the repo)
+ComunimateVoice/build/
+ComunimateVoice/dist/
+release/
+
+# Logs and local settings
+*.log
+
+# Art work-in-progress (the finished pictures live in art/roster and Comunimate/Media)
+art/incoming/
+art/reference/
+art/custom/*
+!art/custom/.gitkeep
+art/*.zip
+art/header/crop_*.png
+art/header/mockup.png
+tools/*.png
+
+# OS clutter
+Thumbs.db
+desktop.ini
+.DS_Store

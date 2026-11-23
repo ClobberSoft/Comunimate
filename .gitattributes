@@ -1,0 +1,5 @@
+* text=auto
+*.tga binary
+*.png binary
+*.webp binary
+*.ico binary

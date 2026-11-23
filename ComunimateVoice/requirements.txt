@@ -1,0 +1,16 @@
+faster-whisper==1.1.1
+# faster-whisper 1.1.1 needs the 0.x hub (which still ships with requests)
+huggingface-hub>=0.23,<1.0
+requests>=2.31
+sounddevice==0.5.1
+numpy>=1.26,<3
+pygame==2.6.1
+
+# The tray helper
+pystray==0.19.5
+psutil==7.2.2
+pillow==13.0.0
+
+# Building the installer and art (not needed to just run the voice app)
+pyinstaller==6.22.3
+luaparser==4.2.0
