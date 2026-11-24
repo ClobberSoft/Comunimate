@@ -16,5 +16,6 @@
 
 **Developers**
 - [Building From Source](Building-From-Source)
+- [Development Blog](Development-Blog)
 
 [Download](https://github.com/ClobberSoft/Comunimate/releases/latest)
