@@ -102,6 +102,10 @@ The version comes from `## Version:` in `Comunimate/Comunimate.toc`. Output: `re
 
 **Art:** see [art/ART_GUIDE.md](art/ART_GUIDE.md). New mascot pictures go through `tools/mascot_art.py import <folder>`, and a new banner through `tools/make_header.py`.
 
+## Support
+
+Comunimate is free. If it makes your game better, you can [buy me a coffee on Ko-fi](https://ko-fi.com/clobbersoft). Thank you!
+
 ## License
 
 Code: MIT. Artwork: © ClobberSoft, for use with Comunimate. See [LICENSE](LICENSE).

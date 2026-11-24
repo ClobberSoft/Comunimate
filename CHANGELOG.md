@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.12.3
+- **Support Comunimate:** a Ko-fi link in Settings → About (and a shortcut at the bottom of the settings sidebar). The tray menu has **Support on Ko-fi** and **Help and wiki**.
+
 ## 0.12.2
 - **Reply.** Say "Say in reply, ..." or "Reply, ..." to whisper back to whoever whispered you last. There's also a **Reply** channel in the D-Down list (it shows their name), and `/r` works from the keyboard.
 

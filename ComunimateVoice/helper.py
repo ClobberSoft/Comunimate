@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import traceback
+import webbrowser
 import winreg
 from ctypes import wintypes
 from pathlib import Path
@@ -29,8 +30,10 @@ import pystray
 from PIL import Image
 
 APP_NAME = "Comunimate"
-VERSION = "0.12.2"
+VERSION = "0.12.3"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+WIKI_URL = "https://github.com/ClobberSoft/Comunimate/wiki"
+KOFI_URL = "https://ko-fi.com/clobbersoft"
 SCAN_SECONDS = 2.0
 # Tray icon: two looks only (whistling orc on green, yelling orc on red while
 # the mic is on). Other states (waiting for WoW, loading...) are in the hover text.
@@ -151,6 +154,9 @@ class Helper:
                 target=self.install_addon, kwargs={"force": True}, daemon=True).start()),
             item("Open settings file", lambda: os.startfile(cv.CONFIG_PATH)),
             item("Open log", lambda: os.startfile(cv.LOG_PATH)),
+            pystray.Menu.SEPARATOR,
+            item("Help and wiki", lambda: webbrowser.open(WIKI_URL)),
+            item("Support on Ko-fi", lambda: webbrowser.open(KOFI_URL)),
             pystray.Menu.SEPARATOR,
             item(f"Quit {APP_NAME}", self.on_quit),
         )

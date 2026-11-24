@@ -373,9 +373,44 @@ local function makeTalkBind(row, def)
 	return b
 end
 
+-- A web link people can copy (WoW doesn't let add-ons open a browser).
+-- Click or press it: the link is selected, ready for Ctrl+C.
+local function makeLink(row, def)
+	local eb = CreateFrame("EditBox", nil, row, "BackdropTemplate")
+	eb:SetSize(CONTROL_W, 28)
+	eb:SetAutoFocus(false)
+	eb:SetFontObject(ChatFontNormal)
+	eb:SetTextInsets(8, 8, 0, 0)
+	eb:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
+	eb:SetBackdropColor(unpack(C.control))
+	hairline(eb, C.accent)
+	eb:SetText(def.url)
+	eb:SetCursorPosition(0)
+	-- Read-only: any edit snaps back to the link.
+	eb:SetScript("OnTextChanged", function(self, user)
+		if user and self:GetText() ~= def.url then
+			self:SetText(def.url)
+			self:HighlightText()
+		end
+	end)
+	eb:SetScript("OnEditFocusGained", function(self) self:HighlightText() end)
+	eb:SetScript("OnEditFocusLost", function(self) self:HighlightText(0, 0) self:SetCursorPosition(0) end)
+	eb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+	eb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+	eb:SetScript("OnMouseUp", function(self) self:SetFocus() self:HighlightText() end)
+	function eb:Refresh() end
+	function eb:Nudge() end
+	function eb:Activate()
+		self:SetFocus()
+		self:HighlightText()
+	end
+	return eb
+end
+
 local MAKERS = {
 	toggle = makeToggle, slider = makeSlider, choice = makeSegmented,
 	cycle = makeCycle, button = makeButton, bind = makeBind, talk = makeTalkBind,
+	link = makeLink,
 }
 
 local function bindRow(action, label)
@@ -555,6 +590,10 @@ local PAGES = {
 			{ kind = "info", label = "Comunimate",
 				desc = "Chat with a controller: a split keyboard, WoW word suggestions and voice. "
 					.. "Type /cm to open the keyboard, /cm options for this window." },
+			{ kind = "link", label = "Support Comunimate",
+				desc = "Comunimate is free. If it makes your game better, you can buy me a coffee on Ko-fi. "
+					.. "Click the link, then Ctrl+C to copy it. (Or right-click the orc in your system tray.)",
+				url = "https://ko-fi.com/clobbersoft" },
 			{ kind = "toggle", key = "debug", label = "Debug messages",
 				desc = "Print button names and stick values to chat. For troubleshooting." },
 		},
@@ -569,6 +608,7 @@ local function makeRow(page, def, y)
 	local row = CreateFrame("Frame", nil, page)
 	local h = (def.kind == "info" and INFO_H) or (def.kind == "preview" and 140) or (def.kind == "bind" and 44) or ROW_H
 	if def.kind == "talk" then h = 52 end
+	if def.kind == "link" then h = INFO_H end
 	row:SetPoint("TOPLEFT", page, "TOPLEFT", 0, -y)
 	row:SetPoint("RIGHT", page, "RIGHT")
 	row:SetHeight(h)
@@ -706,6 +746,17 @@ function O:Build()
 	local version = text(side, "GameFontDisableSmall", C.muted)
 	version:SetPoint("BOTTOMLEFT", 18, 14)
 	version:SetText("v" .. (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetadata("Comunimate", "Version") or ""))
+
+	-- "Support Comunimate": jumps to the About page with the Ko-fi link.
+	local support = CreateFrame("Button", nil, side)
+	support:SetSize(SIDE_W - 20, 20)
+	support:SetPoint("BOTTOMLEFT", version, "TOPLEFT", -2, 6)
+	support.label = text(support, "GameFontNormalSmall", C.accent)
+	support.label:SetPoint("LEFT", 2, 0)
+	support.label:SetText("Support Comunimate")
+	support:SetScript("OnEnter", function(self) self.label:SetTextColor(unpack(C.text)) end)
+	support:SetScript("OnLeave", function(self) self.label:SetTextColor(unpack(C.accent)) end)
+	support:SetScript("OnClick", function() O:SelectPage(#PAGES) end)
 
 	-- Pages.
 	self.tabs, self.pages = {}, {}
