@@ -18,4 +18,4 @@
 - [Building From Source](Building-From-Source)
 - [Development Blog](Development-Blog)
 
-[Download](https://github.com/ClobberSoft/Comunimate/releases/latest)
+[Download](https://github.com/ClobberSoft/Comunimate/releases/latest) · [Support on Ko-fi](https://ko-fi.com/clobbersoft)

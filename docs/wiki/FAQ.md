@@ -1,7 +1,7 @@
 # FAQ
 
 **Is it free?**
-Yes. The code is MIT licensed.
+Yes. The code is MIT licensed. If it makes your game better, you can [support it on Ko-fi](https://ko-fi.com/clobbersoft). There's also a link in Settings → About and in the tray menu.
 
 **Is this allowed by Blizzard?**
 Comunimate is a normal add-on plus a separate program that types for you, like a keyboard would. It doesn't automate gameplay. Chat is sent the way WoW allows add-ons to send it. As with any add-on, use it at your own discretion.
